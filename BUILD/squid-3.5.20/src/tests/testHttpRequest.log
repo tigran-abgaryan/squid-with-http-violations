@@ -1,0 +1,7 @@
+.SKIP: stub_mem.cc Init (not implemented).
+.SKIP: stub_mem.cc Init (not implemented).
+.SKIP: stub_mem.cc Init (not implemented).
+.SKIP: stub_mem.cc Init (not implemented).
+.........
+OK (13)
+PASS tests/testHttpRequest (exit status: 0)

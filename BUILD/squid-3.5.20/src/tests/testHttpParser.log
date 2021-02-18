@@ -1,0 +1,4 @@
+.SKIP: stub_mem.cc Init (not implemented).
+....
+OK (5)
+PASS tests/testHttpParser (exit status: 0)

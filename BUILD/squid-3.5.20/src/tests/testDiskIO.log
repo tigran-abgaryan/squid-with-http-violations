@@ -1,0 +1,4 @@
+.SKIP: stub_mem.cc Init (not implemented).
+
+OK (1)
+PASS tests/testDiskIO (exit status: 0)

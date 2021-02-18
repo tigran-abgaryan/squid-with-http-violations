@@ -1,0 +1,5 @@
+.SKIP: stub_mem.cc Init (not implemented).
+.SKIP: stub_mem.cc Init (not implemented).
+
+OK (2)
+PASS tests/testCacheManager (exit status: 0)

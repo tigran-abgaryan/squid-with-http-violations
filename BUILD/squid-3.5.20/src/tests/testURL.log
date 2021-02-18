@@ -1,0 +1,5 @@
+.SKIP: stub_mem.cc Init (not implemented).
+.SKIP: stub_mem.cc Init (not implemented).
+........
+OK (10)
+PASS tests/testURL (exit status: 0)

@@ -1,0 +1,5 @@
+.SKIP: cache_cf.cc operator void* (not implemented).
+SKIP: tools.cc UsingSmp (not implemented).
+.
+OK (2)
+PASS tests/testUfs (exit status: 0)

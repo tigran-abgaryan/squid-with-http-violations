@@ -1,0 +1,6 @@
+stub time| teststring
+stub time| teststring
+stub time| teststring
+stub time| stream test
+stub time| 5 ThisIsAStreamTest
+PASS debug (exit status: 0)

@@ -1,0 +1,155 @@
+diff -up squid-3.5.20/src/comm/AcceptLimiter.cc.02396660 squid-3.5.20/src/comm/AcceptLimiter.cc
+--- squid-3.5.20/src/comm/AcceptLimiter.cc.02396660	2019-06-05 13:18:11.000000000 +0200
++++ squid-3.5.20/src/comm/AcceptLimiter.cc	2019-06-05 13:21:29.000000000 +0200
+@@ -24,42 +24,33 @@ Comm::AcceptLimiter::Instance()
+ void
+ Comm::AcceptLimiter::defer(const Comm::TcpAcceptor::Pointer &afd)
+ {
+-    ++ (afd->isLimited);
+-    debugs(5, 5, afd->conn << " x" << afd->isLimited);
++    debugs(5, 5, afd->conn << "; already queued: " << deferred_.size());
+     deferred_.push_back(afd);
+ }
+ 
+ void
+ Comm::AcceptLimiter::removeDead(const Comm::TcpAcceptor::Pointer &afd)
+ {
+-    uint64_t abandonedClients = 0;
+-    for (unsigned int i = 0; i < deferred_.size() && afd->isLimited > 0; ++i) {
+-        if (deferred_[i] == afd) {
+-            -- deferred_[i]->isLimited;
+-            deferred_[i] = NULL; // fast. kick() will skip empty entries later.
+-            debugs(5, 5, afd->conn << " x" << afd->isLimited);
+-            ++abandonedClients;
++    for (auto it = deferred_.begin(); it != deferred_.end(); ++it) {
++        if (*it == afd) {
++            *it = nullptr; // fast. kick() will skip empty entries later.
++            debugs(5,4, "Abandoned client TCP SYN by closing socket: " << afd->conn);
++            return;
+         }
+     }
+-    debugs(5,4, "Abandoned " << abandonedClients << " client TCP SYN by closing socket: " << afd->conn);
++    debugs(5,4, "Not found " << afd->conn << " in queue, size: " << deferred_.size());
+ }
+ 
+ void
+ Comm::AcceptLimiter::kick()
+ {
+-    // TODO: this could be optimized further with an iterator to search
+-    //       looking for first non-NULL, followed by dumping the first N
+-    //       with only one shift()/pop_front operation
+-    //  OR, by reimplementing as a list instead of Vector.
+-
+     debugs(5, 5, "size=" << deferred_.size());
+-    while (deferred_.size() > 0 && fdNFree() >= RESERVED_FD) {
++    while (deferred_.size() > 0 && Comm::TcpAcceptor::okToAccept()) {
+         /* NP: shift() is equivalent to pop_front(). Giving us a FIFO queue. */
+         TcpAcceptor::Pointer temp = deferred_.front();
+         deferred_.erase(deferred_.begin());
+         if (temp.valid()) {
+             debugs(5, 5, "doing one.");
+-            -- temp->isLimited;
+             temp->acceptNext();
+             break;
+         }
+diff -up squid-3.5.20/src/comm/AcceptLimiter.h.02396660 squid-3.5.20/src/comm/AcceptLimiter.h
+--- squid-3.5.20/src/comm/AcceptLimiter.h.02396660	2019-06-05 13:18:27.000000000 +0200
++++ squid-3.5.20/src/comm/AcceptLimiter.h	2019-06-05 13:22:09.000000000 +0200
+@@ -11,7 +11,7 @@
+ 
+ #include "comm/TcpAcceptor.h"
+ 
+-#include <vector>
++#include <deque>
+ 
+ namespace Comm
+ {
+@@ -26,16 +26,6 @@ namespace Comm
+  * removeDead - used only by Comm layer ConnAcceptor to remove themselves when dying.
+  * kick - used by Comm layer when FD are closed.
+  */
+-/* TODO this algorithm can be optimized further:
+- *
+- * 1) reduce overheads by only pushing one entry per port to the list?
+- * use TcpAcceptor::isLimited as a flag whether to re-list when kick()'ing
+- * or to NULL an entry while scanning the list for empty spaces.
+- * Side effect: TcpAcceptor->kick() becomes allowed to pull off multiple accept()'s in bunches
+- *
+- * 2) re-implement as a std::queue instead of std::vector
+- * storing head/tail pointers for fast push/pop and avoiding the whole shift() overhead
+- */
+ class AcceptLimiter
+ {
+ 
+@@ -56,7 +46,7 @@ private:
+     static AcceptLimiter Instance_;
+ 
+     /** FIFO queue */
+-    std::vector<TcpAcceptor::Pointer> deferred_;
++    std::deque<TcpAcceptor::Pointer> deferred_;
+ };
+ 
+ }; // namepace Comm
+diff -up squid-3.5.20/src/comm/TcpAcceptor.cc.02396660 squid-3.5.20/src/comm/TcpAcceptor.cc
+--- squid-3.5.20/src/comm/TcpAcceptor.cc.02396660	2019-06-05 13:18:49.000000000 +0200
++++ squid-3.5.20/src/comm/TcpAcceptor.cc	2019-06-05 13:23:49.000000000 +0200
+@@ -41,7 +41,6 @@ CBDATA_NAMESPACED_CLASS_INIT(Comm, TcpAc
+ Comm::TcpAcceptor::TcpAcceptor(const Comm::ConnectionPointer &newConn, const char *note, const Subscription::Pointer &aSub) :
+     AsyncJob("Comm::TcpAcceptor"),
+     errcode(0),
+-    isLimited(0),
+     theCallSub(aSub),
+     conn(newConn),
+     listenPort_()
+@@ -50,7 +49,6 @@ Comm::TcpAcceptor::TcpAcceptor(const Com
+ Comm::TcpAcceptor::TcpAcceptor(const AnyP::PortCfgPointer &p, const char *note, const Subscription::Pointer &aSub) :
+     AsyncJob("Comm::TcpAcceptor"),
+     errcode(0),
+-    isLimited(0),
+     theCallSub(aSub),
+     conn(p->listenConn),
+     listenPort_(p)
+@@ -227,7 +225,6 @@ Comm::TcpAcceptor::doAccept(int fd, void
+         } else {
+             afd->acceptNext();
+         }
+-        SetSelect(fd, COMM_SELECT_READ, Comm::TcpAcceptor::doAccept, afd, 0);
+ 
+     } catch (const std::exception &e) {
+         fatalf("FATAL: error while accepting new client connection: %s\n", e.what());
+@@ -286,6 +283,7 @@ Comm::TcpAcceptor::acceptOne()
+            " accepted new connection " << newConnDetails <<
+            " handler Subscription: " << theCallSub);
+     notify(flag, newConnDetails);
++    SetSelect(conn->fd, COMM_SELECT_READ, doAccept, this, 0);
+ }
+ 
+ void
+diff -up squid-3.5.20/src/comm/TcpAcceptor.h.02396660 squid-3.5.20/src/comm/TcpAcceptor.h
+--- squid-3.5.20/src/comm/TcpAcceptor.h.02396660	2019-06-05 13:18:57.000000000 +0200
++++ squid-3.5.20/src/comm/TcpAcceptor.h	2019-06-05 13:25:05.000000000 +0200
+@@ -74,9 +74,12 @@ public:
+     /// errno code of the last accept() or listen() action if one occurred.
+     int errcode;
+ 
++    /// Method to test if there are enough file descriptors to open a new client connection
++    /// if not the accept() will be postponed
++    static bool okToAccept();
++
+ protected:
+     friend class AcceptLimiter;
+-    int32_t isLimited;                   ///< whether this socket is delayed and on the AcceptLimiter queue.
+ 
+ private:
+     Subscription::Pointer theCallSub;    ///< used to generate AsyncCalls handling our events.
+@@ -91,10 +94,6 @@ private:
+     /// listen socket closure handler
+     AsyncCall::Pointer closer_;
+ 
+-    /// Method to test if there are enough file descriptors to open a new client connection
+-    /// if not the accept() will be postponed
+-    static bool okToAccept();
+-
+     /// Method callback for whenever an FD is ready to accept a client connection.
+     static void doAccept(int fd, void *data);
+ 

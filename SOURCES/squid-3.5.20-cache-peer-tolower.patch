@@ -1,0 +1,32 @@
+From d3527ec67a9ddad9c189ae360d4f6181d5413bfa Mon Sep 17 00:00:00 2001
+From: uhliarik <luhliari@redhat.com>
+Date: Mon, 15 Jul 2019 03:42:39 +0000
+Subject: [PATCH] Bug 4966: Lower cache_peer hostname (#420)
+
+When parsing entries from /etc/hosts file, they are all lowered
+(see bug 3040). If cache_peer hostname is uppercase, it will
+lead to DNS resolution failure. Lowering cache_peer host fixes
+this issue.
+
+This change may expose broken Squid configurations that
+incorrectly relied on non-lowercase peer host names to
+bypass Squid's "is this cache_peer different from me?"
+check. Though such configurations should encounter
+forwarding loop errors later anyway.
+---
+ src/cache_cf.cc | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/cache_cf.cc b/src/cache_cf.cc
+index 8886b68..e6b231c 100644
+--- a/src/cache_cf.cc
++++ b/src/cache_cf.cc
+@@ -2075,7 +2075,7 @@ parse_peer(CachePeer ** head)
+         self_destruct();
+ 
+     p->host = xstrdup(token);
+-
++    Tolower(p->host);
+     p->name = xstrdup(token);
+ 
+     if ((token = ConfigParser::NextToken()) == NULL)

@@ -1,0 +1,2 @@
+SKIP: stub_mem.cc Init (not implemented).
+PASS tests/test_http_range (exit status: 0)

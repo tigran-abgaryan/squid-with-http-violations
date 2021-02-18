@@ -1,0 +1,7 @@
+.SKIP: stub_mem.cc Init (not implemented).
+.SKIP: stub_mem.cc Init (not implemented).
+.SKIP: stub_mem.cc Init (not implemented).
+.SKIP: stub_mem.cc Init (not implemented).
+
+OK (4)
+PASS tests/testString (exit status: 0)

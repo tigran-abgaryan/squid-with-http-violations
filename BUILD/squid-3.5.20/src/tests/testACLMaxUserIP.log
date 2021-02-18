@@ -1,0 +1,5 @@
+SKIP: ssl/libsslsquid.la Config (not implemented).
+..
+OK (2)
+SKIP: ssl/libsslsquid.la ~Config (not implemented).
+PASS tests/testACLMaxUserIP (exit status: 0)

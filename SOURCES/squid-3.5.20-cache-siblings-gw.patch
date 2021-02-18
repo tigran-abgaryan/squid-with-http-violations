@@ -1,0 +1,308 @@
+diff --git a/src/FwdState.cc b/src/FwdState.cc
+index f16acd0..c1d8a0f 100644
+--- a/src/FwdState.cc
++++ b/src/FwdState.cc
+@@ -139,7 +139,6 @@ FwdState::FwdState(const Comm::ConnectionPointer &client, StoreEntry * e, HttpRe
+     start_t = squid_curtime;
+     serverDestinations.reserve(Config.forward_max_tries);
+     e->lock("FwdState");
+-    EBIT_SET(e->flags, ENTRY_FWD_HDR_WAIT);
+ }
+ 
+ // Called once, right after object creation, when it is safe to set self
+@@ -250,7 +249,6 @@ FwdState::completed()
+             }
+ #endif
+         } else {
+-            EBIT_CLR(entry->flags, ENTRY_FWD_HDR_WAIT);
+             entry->complete();
+             entry->releaseRequest();
+         }
+@@ -495,7 +493,6 @@ FwdState::complete()
+             debugs(17, 3, HERE << "server FD " << serverConnection()->fd << " not re-forwarding status " << entry->getReply()->sline.status());
+         else
+             debugs(17, 3, HERE << "server (FD closed) not re-forwarding status " << entry->getReply()->sline.status());
+-        EBIT_CLR(entry->flags, ENTRY_FWD_HDR_WAIT);
+         entry->complete();
+ 
+         if (!Comm::IsConnOpen(serverConn))
+diff --git a/src/MemStore.cc b/src/MemStore.cc
+index 86b6024..405b644 100644
+--- a/src/MemStore.cc
++++ b/src/MemStore.cc
+@@ -402,7 +402,6 @@ MemStore::copyFromShmSlice(StoreEntry &e, const StoreIOBuffer &buf, bool eof)
+         const int result = rep->httpMsgParseStep(mb.buf, buf.length, eof);
+         if (result > 0) {
+             assert(rep->pstate == psParsed);
+-            EBIT_CLR(e.flags, ENTRY_FWD_HDR_WAIT);
+         } else if (result < 0) {
+             debugs(20, DBG_IMPORTANT, "Corrupted mem-cached headers: " << e);
+             return false;
+@@ -508,15 +507,9 @@ MemStore::startCaching(StoreEntry &e)
+ void
+ MemStore::copyToShm(StoreEntry &e)
+ {
+-    // prevents remote readers from getting ENTRY_FWD_HDR_WAIT entries and
+-    // not knowing when the wait is over
+-    if (EBIT_TEST(e.flags, ENTRY_FWD_HDR_WAIT)) {
+-        debugs(20, 5, "postponing copying " << e << " for ENTRY_FWD_HDR_WAIT");
+-        return;
+-    }
+-
+     assert(map);
+     assert(e.mem_obj);
++    Must(!EBIT_TEST(e.flags, ENTRY_FWD_HDR_WAIT));
+ 
+     const int32_t index = e.mem_obj->memCache.index;
+     assert(index >= 0);
+diff --git a/src/client_side_request.cc b/src/client_side_request.cc
+index a824b08..5debc29 100644
+--- a/src/client_side_request.cc
++++ b/src/client_side_request.cc
+@@ -1919,7 +1919,6 @@ ClientHttpRequest::handleAdaptedHeader(HttpMsg *msg)
+         assert(repContext);
+         repContext->createStoreEntry(request->method, request->flags);
+ 
+-        EBIT_CLR(storeEntry()->flags, ENTRY_FWD_HDR_WAIT);
+         request_satisfaction_mode = true;
+         request_satisfaction_offset = 0;
+         storeEntry()->replaceHttpReply(new_rep);
+diff --git a/src/clients/FtpGateway.cc b/src/clients/FtpGateway.cc
+index 9c78bbb..4f8319a 100644
+--- a/src/clients/FtpGateway.cc
++++ b/src/clients/FtpGateway.cc
+@@ -2309,7 +2309,6 @@ Ftp::Gateway::completedListing()
+     ferr.ftp.server_msg = ctrl.message;
+     ctrl.message = NULL;
+     entry->replaceHttpReply( ferr.BuildHttpReply() );
+-    EBIT_CLR(entry->flags, ENTRY_FWD_HDR_WAIT);
+     entry->flush();
+     entry->unlock("Ftp::Gateway");
+ }
+@@ -2588,8 +2587,6 @@ Ftp::Gateway::appendSuccessHeader()
+ 
+     assert(entry->isEmpty());
+ 
+-    EBIT_CLR(entry->flags, ENTRY_FWD_HDR_WAIT);
+-
+     entry->buffer();    /* released when done processing current data payload */
+ 
+     filename = (t = urlpath.rpos('/')) ? t + 1 : urlpath.termedBuf();
+diff --git a/src/clients/FtpRelay.cc b/src/clients/FtpRelay.cc
+index ed498b4..f1d4e9e 100644
+--- a/src/clients/FtpRelay.cc
++++ b/src/clients/FtpRelay.cc
+@@ -290,7 +290,6 @@ Ftp::Relay::failedErrorMessage(err_type error, int xerrno)
+     const Http::StatusCode httpStatus = failedHttpStatus(error);
+     HttpReply *const reply = createHttpReply(httpStatus);
+     entry->replaceHttpReply(reply);
+-    EBIT_CLR(entry->flags, ENTRY_FWD_HDR_WAIT);
+     fwd->request->detailError(error, xerrno);
+ }
+ 
+@@ -373,7 +372,6 @@ void
+ Ftp::Relay::forwardReply()
+ {
+     assert(entry->isEmpty());
+-    EBIT_CLR(entry->flags, ENTRY_FWD_HDR_WAIT);
+ 
+     HttpReply *const reply = createHttpReply(Http::scNoContent);
+ 
+@@ -448,7 +446,6 @@ Ftp::Relay::startDataDownload()
+            " (" << data.conn->local << ")");
+ 
+     HttpReply *const reply = createHttpReply(Http::scOkay, -1);
+-    EBIT_CLR(entry->flags, ENTRY_FWD_HDR_WAIT);
+     setVirginReply(reply);
+     adaptOrFinalizeReply();
+ 
+diff --git a/src/enums.h b/src/enums.h
+index 4d04805..50199da 100644
+--- a/src/enums.h
++++ b/src/enums.h
+@@ -96,12 +96,31 @@ typedef enum {
+ enum {
+     ENTRY_SPECIAL,
+     ENTRY_REVALIDATE,
++
++    /// Tiny Store writes are likely. The writes should be aggregated together
++    /// before Squid announces the new content availability to the store
++    /// clients. For example, forming a cached HTTP response header may result
++    /// in dozens of StoreEntry::write() calls, many of which adding as little
++    /// as two bytes. Sharing those small writes with the store clients
++    /// increases overhead, especially because the client code can do nothing
++    /// useful with the written content until the whole response header is
++    /// stored. Might be combined with ENTRY_FWD_HDR_WAIT. TODO: Rename to
++    /// ENTRY_DELAY_WHILE_COALESCING to emphasize the difference from and
++    /// similarity with ENTRY_FWD_HDR_WAIT.
+     DELAY_SENDING,
+     RELEASE_REQUEST,
+     REFRESH_REQUEST,
+     ENTRY_CACHABLE_RESERVED_FOR_FUTURE_USE,
+     ENTRY_DISPATCHED,
+     KEY_PRIVATE,
++
++    /// The current entry response may change. The contents of an entry in this
++    /// state must not be shared with its store clients. For example, Squid
++    /// receives (and buffers) an HTTP/504 response but may decide to retry that
++    /// transaction to receive a successful response from another server
++    /// instead. Might be combined with DELAY_SENDING. TODO: Rename to
++    /// ENTRY_DELAY_WHILE_WOBBLING to emphasize the difference from and
++    /// similarity with DELAY_SENDING.
+     ENTRY_FWD_HDR_WAIT,
+     ENTRY_NEGCACHED,
+     ENTRY_VALIDATED,
+diff --git a/src/gopher.cc b/src/gopher.cc
+index d373e8a..6d4ab1e 100644
+--- a/src/gopher.cc
++++ b/src/gopher.cc
+@@ -233,7 +233,6 @@ gopherMimeCreate(GopherStateData * gopherState)
+     }
+ 
+     assert(entry->isEmpty());
+-    EBIT_CLR(entry->flags, ENTRY_FWD_HDR_WAIT);
+ 
+     HttpReply *reply = new HttpReply;
+     entry->buffer();
+diff --git a/src/http.cc b/src/http.cc
+index 1dd1e6d..08531dc 100644
+--- a/src/http.cc
++++ b/src/http.cc
+@@ -932,8 +932,8 @@ HttpStateData::haveParsedReplyHeaders()
+ 
+         if (vary.isEmpty()) {
+             entry->makePrivate();
+-            if (!fwd->reforwardableStatus(rep->sline.status()))
+-                EBIT_CLR(entry->flags, ENTRY_FWD_HDR_WAIT);
++            if (fwd->reforwardableStatus(rep->sline.status()))
++                EBIT_SET(entry->flags, ENTRY_FWD_HDR_WAIT);
+             varyFailure = true;
+         } else {
+             entry->mem_obj->vary_headers = vary;
+@@ -945,8 +945,8 @@ HttpStateData::haveParsedReplyHeaders()
+          * If its not a reply that we will re-forward, then
+          * allow the client to get it.
+          */
+-        if (!fwd->reforwardableStatus(rep->sline.status()))
+-            EBIT_CLR(entry->flags, ENTRY_FWD_HDR_WAIT);
++        if (fwd->reforwardableStatus(rep->sline.status()))
++            EBIT_SET(entry->flags, ENTRY_FWD_HDR_WAIT);
+ 
+         switch (cacheableReply()) {
+ 
+diff --git a/src/ipc/Forwarder.cc b/src/ipc/Forwarder.cc
+index bf3c428..116d6f0 100644
+--- a/src/ipc/Forwarder.cc
++++ b/src/ipc/Forwarder.cc
+@@ -94,8 +94,10 @@ Ipc::Forwarder::handleRemoteAck()
+ {
+     debugs(54, 3, HERE);
+     request->requestId = 0;
+-    // Do not clear ENTRY_FWD_HDR_WAIT or do entry->complete() because
+-    // it will trigger our client side processing. Let job cleanup close.
++    // Do not do entry->complete() because it will trigger our client side
++    // processing when we no longer own the client-Squid connection.
++    // Let job cleanup close the client-Squid connection that Coordinator
++    // now owns.
+ }
+ 
+ /// Ipc::Forwarder::requestTimedOut wrapper
+diff --git a/src/mgr/Forwarder.cc b/src/mgr/Forwarder.cc
+index 3c4e4f3..7d33a9b 100644
+--- a/src/mgr/Forwarder.cc
++++ b/src/mgr/Forwarder.cc
+@@ -37,7 +37,6 @@ Mgr::Forwarder::Forwarder(const Comm::ConnectionPointer &aConn, const ActionPara
+ 
+     HTTPMSGLOCK(httpRequest);
+     entry->lock("Mgr::Forwarder");
+-    EBIT_SET(entry->flags, ENTRY_FWD_HDR_WAIT);
+ 
+     closer = asyncCall(16, 5, "Mgr::Forwarder::noteCommClosed",
+                        CommCbMemFunT<Forwarder, CommCloseCbParams>(this, &Forwarder::noteCommClosed));
+@@ -122,7 +121,6 @@ Mgr::Forwarder::sendError(ErrorState *error)
+     Must(entry != NULL);
+     Must(httpRequest != NULL);
+ 
+-    EBIT_CLR(entry->flags, ENTRY_FWD_HDR_WAIT);
+     entry->buffer();
+     entry->replaceHttpReply(error->BuildHttpReply());
+     entry->expires = squid_curtime;
+diff --git a/src/store.cc b/src/store.cc
+index cbb2676..c5ae817 100644
+--- a/src/store.cc
++++ b/src/store.cc
+@@ -831,8 +831,12 @@ StoreEntry::write (StoreIOBuffer writeBuffer)
+     storeGetMemSpace(writeBuffer.length);
+     mem_obj->write(writeBuffer);
+ 
+-    if (!EBIT_TEST(flags, DELAY_SENDING))
+-        invokeHandlers();
++    if (EBIT_TEST(flags, ENTRY_FWD_HDR_WAIT) && !mem_obj->readAheadPolicyCanRead()) {
++        debugs(20, 3, "allow Store clients to get entry content after buffering too much for " << *this);
++        EBIT_CLR(flags, ENTRY_FWD_HDR_WAIT);
++    }
++
++    invokeHandlers();
+ }
+ 
+ /* Append incoming data from a primary server to an entry. */
+@@ -1047,6 +1051,9 @@ StoreEntry::complete()
+ {
+     debugs(20, 3, "storeComplete: '" << getMD5Text() << "'");
+ 
++    // To preserve forwarding retries, call FwdState::complete() instead.
++    EBIT_CLR(flags, ENTRY_FWD_HDR_WAIT);
++
+     if (store_status != STORE_PENDING) {
+         /*
+          * if we're not STORE_PENDING, then probably we got aborted
+@@ -1103,6 +1110,9 @@ StoreEntry::abort()
+ 
+     EBIT_SET(flags, ENTRY_ABORTED);
+ 
++    // allow the Store clients to be told about the problem
++    EBIT_CLR(flags, ENTRY_FWD_HDR_WAIT);
++
+     setMemStatus(NOT_IN_MEMORY);
+ 
+     store_status = STORE_OK;
+@@ -1890,7 +1900,6 @@ StoreEntry::startWriting()
+ 
+     rep->packHeadersInto(&p);
+     mem_obj->markEndOfReplyHeaders();
+-    EBIT_CLR(flags, ENTRY_FWD_HDR_WAIT);
+ 
+     rep->body.packInto(&p);
+ 
+diff --git a/src/store_client.cc b/src/store_client.cc
+index 07a05d4..7ee1b10 100644
+--- a/src/store_client.cc
++++ b/src/store_client.cc
+@@ -282,11 +282,6 @@ storeClientCopy2(StoreEntry * e, store_client * sc)
+         return;
+     }
+ 
+-    if (EBIT_TEST(e->flags, ENTRY_FWD_HDR_WAIT)) {
+-        debugs(90, 5, "storeClientCopy2: returning because ENTRY_FWD_HDR_WAIT set");
+-        return;
+-    }
+-
+     if (sc->flags.store_copying) {
+         sc->flags.copy_event_pending = true;
+         debugs(90, 3, "storeClientCopy2: Queueing storeClientCopyEvent()");
+@@ -720,6 +715,15 @@ storeUnregister(store_client * sc, StoreEntry * e, void *data)
+ void
+ StoreEntry::invokeHandlers()
+ {
++    if (EBIT_TEST(flags, DELAY_SENDING)) {
++        debugs(90, 3, "DELAY_SENDING is on, exiting " << *this);
++        return;
++    }
++    if (EBIT_TEST(flags, ENTRY_FWD_HDR_WAIT)) {
++        debugs(90, 3, "ENTRY_FWD_HDR_WAIT is on, exiting " << *this);
++        return;
++    }
++
+     /* Commit what we can to disk, if appropriate */
+     swapOut();
+     int i = 0;

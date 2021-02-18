@@ -1,0 +1,6 @@
+.SKIP: stub_mem.cc Init (not implemented).
+.SKIP: stub_mem.cc Init (not implemented).
+.SKIP: stub_mem.cc Init (not implemented).
+
+OK (3)
+PASS tests/testEventLoop (exit status: 0)
