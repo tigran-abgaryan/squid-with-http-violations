@@ -12,7 +12,7 @@ yum install rpm
 ```
 3. Reinstall dependencies:
 ```sh
-yum install perl-Compress-Raw-Bzip2 perl-Compress-Raw-Zlib perl-DBI perl-Digest perl-Digest-MD5 perl-IO-Compress perl-Net-Daemon perl-PlRPC
+yum install perl-Compress-Raw-Bzip2 perl-Compress-Raw-Zlib perl-DBI perl-Digest perl-Digest-MD5 perl-IO-Compress perl-Net-Daemon perl-PlRPC libecap libtool-ltdl
 ```
 4. Download from /RPMS/x86_64/ following packages and run:
 ```sh
